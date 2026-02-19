@@ -9,9 +9,10 @@ from database import save_account, list_accounts, is_token_expired, get_account
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-GRAPH_API = "https://graph.facebook.com/v21.0"
-FB_OAUTH_URL = "https://www.facebook.com/v21.0/dialog/oauth"
-SCOPES = "instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement"
+IG_OAUTH_URL = "https://www.instagram.com/oauth/authorize"
+IG_TOKEN_URL = "https://api.instagram.com/oauth/access_token"
+IG_LONGTOKEN_URL = "https://graph.instagram.com/access_token"
+SCOPES = "instagram_business_basic,instagram_business_content_publish"
 
 
 @router.get("/instagram")
@@ -26,7 +27,7 @@ def instagram_login(user_id: str):
     redirect_uri = f"{base_url}/auth/callback"
 
     url = (
-        f"{FB_OAUTH_URL}"
+        f"{IG_OAUTH_URL}"
         f"?client_id={app_id}"
         f"&redirect_uri={redirect_uri}"
         f"&scope={SCOPES}"
@@ -55,74 +56,40 @@ async def instagram_callback(code: str = None, state: str = None, error: str = N
     redirect_uri = f"{base_url}/auth/callback"
 
     async with httpx.AsyncClient(timeout=30) as client:
-        # 1. Code → short-lived user token
-        token_res = await client.get(
-            f"{GRAPH_API}/oauth/access_token",
-            params={
+        # 1. Code → short-lived token
+        token_res = await client.post(
+            IG_TOKEN_URL,
+            data={
                 "client_id": app_id,
                 "client_secret": app_secret,
+                "grant_type": "authorization_code",
                 "redirect_uri": redirect_uri,
                 "code": code,
             },
         )
         if token_res.status_code != 200:
             raise HTTPException(status_code=400, detail=f"Token alınamadı: {token_res.text}")
-        short_token = token_res.json()["access_token"]
+
+        token_data = token_res.json()
+        short_token = token_data["access_token"]
+        instagram_user_id = str(token_data["user_id"])
 
         # 2. Short-lived → long-lived token (60 gün)
         ll_res = await client.get(
-            f"{GRAPH_API}/oauth/access_token",
+            IG_LONGTOKEN_URL,
             params={
-                "grant_type": "fb_exchange_token",
+                "grant_type": "ig_exchange_token",
                 "client_id": app_id,
                 "client_secret": app_secret,
-                "fb_exchange_token": short_token,
+                "access_token": short_token,
             },
         )
         if ll_res.status_code != 200:
             raise HTTPException(status_code=400, detail=f"Long-lived token alınamadı: {ll_res.text}")
+
         ll_data = ll_res.json()
         long_token = ll_data["access_token"]
-        expires_in = ll_data.get("expires_in", 5184000)  # default 60 gün
-
-        # 3. Facebook Page listesini al
-        pages_res = await client.get(
-            f"{GRAPH_API}/me/accounts",
-            params={"access_token": long_token},
-        )
-        if pages_res.status_code != 200:
-            raise HTTPException(status_code=400, detail=f"Sayfalar alınamadı: {pages_res.text}")
-        pages = pages_res.json().get("data", [])
-
-        if not pages:
-            raise HTTPException(
-                status_code=400,
-                detail="Facebook Sayfası bulunamadı. Instagram hesabınızı bir Facebook Sayfasına bağlayın.",
-            )
-
-        # 4. Instagram Business Account ID al (ilk sayfayı kullan)
-        page = pages[0]
-        page_id = page["id"]
-        page_token = page["access_token"]
-
-        ig_res = await client.get(
-            f"{GRAPH_API}/{page_id}",
-            params={
-                "fields": "instagram_business_account",
-                "access_token": page_token,
-            },
-        )
-        if ig_res.status_code != 200:
-            raise HTTPException(status_code=400, detail=f"Instagram hesabı alınamadı: {ig_res.text}")
-        ig_data = ig_res.json()
-
-        if "instagram_business_account" not in ig_data:
-            raise HTTPException(
-                status_code=400,
-                detail="Bu Facebook Sayfasına bağlı Instagram Business/Creator hesabı yok.",
-            )
-
-        instagram_user_id = ig_data["instagram_business_account"]["id"]
+        expires_in = ll_data.get("expires_in", 5184000)
 
     expires_at = int(time.time()) + expires_in
     save_account(user_id, instagram_user_id, long_token, expires_at)
@@ -155,7 +122,6 @@ def get_accounts():
 async def refresh_token(user_id: str):
     """
     Hesabın token'ını yenile (60 günden önce çağırılmalı).
-    Token süresi dolmadan yenilenebilir.
     """
     account = get_account(user_id)
     if not account:
@@ -166,12 +132,10 @@ async def refresh_token(user_id: str):
 
     async with httpx.AsyncClient(timeout=30) as client:
         res = await client.get(
-            f"{GRAPH_API}/oauth/access_token",
+            "https://graph.instagram.com/refresh_access_token",
             params={
-                "grant_type": "fb_exchange_token",
-                "client_id": app_id,
-                "client_secret": app_secret,
-                "fb_exchange_token": account["access_token"],
+                "grant_type": "ig_refresh_token",
+                "access_token": account["access_token"],
             },
         )
         if res.status_code != 200:
