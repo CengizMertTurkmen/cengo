@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 
 GRAPH_API = "https://graph.instagram.com/v21.0"
@@ -11,9 +12,10 @@ class InstagramService:
     async def post_image(self, image_url: str, caption: str) -> dict:
         """
         Instagram Graph API ile fotoğraf paylaşır.
-        2 adım:
+        3 adım:
           1. Media container oluştur
-          2. Container'ı yayınla
+          2. Container FINISHED olana kadar bekle
+          3. Container'ı yayınla
         """
         async with httpx.AsyncClient(timeout=30) as client:
             # Adım 1: Media container oluştur
@@ -29,7 +31,24 @@ class InstagramService:
                 raise Exception(f"Container oluşturulamadı: {container_res.text}")
             creation_id = container_res.json()["id"]
 
-            # Adım 2: Yayınla
+            # Adım 2: Container FINISHED olana kadar bekle (max 30 saniye)
+            for _ in range(10):
+                status_res = await client.get(
+                    f"{GRAPH_API}/{creation_id}",
+                    params={
+                        "fields": "status_code",
+                        "access_token": self.access_token,
+                    },
+                )
+                if status_res.status_code == 200:
+                    status = status_res.json().get("status_code")
+                    if status == "FINISHED":
+                        break
+                    if status == "ERROR":
+                        raise Exception(f"Container hazırlanırken hata oluştu.")
+                await asyncio.sleep(3)
+
+            # Adım 3: Yayınla
             publish_res = await client.post(
                 f"{GRAPH_API}/{self.user_id}/media_publish",
                 params={
