@@ -25,7 +25,8 @@ class InstagramService:
                     "access_token": self.access_token,
                 },
             )
-            container_res.raise_for_status()
+            if container_res.status_code != 200:
+                raise Exception(f"Container oluşturulamadı: {container_res.text}")
             creation_id = container_res.json()["id"]
 
             # Adım 2: Yayınla
@@ -36,5 +37,6 @@ class InstagramService:
                     "access_token": self.access_token,
                 },
             )
-            publish_res.raise_for_status()
+            if publish_res.status_code != 200:
+                raise Exception(f"Yayınlama başarısız: {publish_res.text}")
             return publish_res.json()
