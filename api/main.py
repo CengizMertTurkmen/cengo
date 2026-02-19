@@ -5,23 +5,26 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
+from auth import router as auth_router
+from database import init_db, get_account, is_token_expired
 from instagram import InstagramService
 from storage import CloudinaryStorage
 
 load_dotenv()
 
-app = FastAPI(title="Cengo Content API", version="1.0.0")
+app = FastAPI(title="Cengo Content API", version="2.0.0")
 
-# Servisler
+# DB başlat
+init_db()
+
+# Auth router (OAuth + hesap yönetimi)
+app.include_router(auth_router)
+
+# Cloudinary
 storage = CloudinaryStorage(
     cloud_name=os.environ["CLOUDINARY_CLOUD_NAME"],
     api_key=os.environ["CLOUDINARY_API_KEY"],
     api_secret=os.environ["CLOUDINARY_API_SECRET"],
-)
-
-instagram = InstagramService(
-    user_id=os.environ["INSTAGRAM_USER_ID"],
-    access_token=os.environ["INSTAGRAM_ACCESS_TOKEN"],
 )
 
 
@@ -32,16 +35,32 @@ def health():
 
 @app.post("/api/post")
 async def create_post(
+    user_id: str = Form(..., description="Müşteri ID (kayıt sırasında verilen)"),
     image: UploadFile = File(..., description="Paylaşılacak fotoğraf"),
     caption: str = Form(..., description="Fotoğraf altı yazı"),
 ):
     """
-    Müşteriden fotoğraf + yazı alır, Instagram'da paylaşır.
+    Belirtilen kullanıcının Instagram hesabına fotoğraf paylaşır.
 
+    - **user_id**: Hesap bağlama sırasında kullanılan müşteri ID
     - **image**: JPEG veya PNG fotoğraf dosyası
     - **caption**: Gönderi açıklaması (hashtag'ler dahil)
     """
-    # Sadece resim formatlarını kabul et
+    # Hesabı DB'den al
+    account = get_account(user_id)
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail=f"'{user_id}' ID'li hesap bulunamadı. Önce /auth/instagram?user_id={user_id} ile hesabı bağlayın.",
+        )
+
+    # Token yakında sona erecek mi?
+    if is_token_expired(account):
+        raise HTTPException(
+            status_code=401,
+            detail=f"'{user_id}' hesabının token'ı sona eriyor. /auth/refresh/{user_id} ile yenileyin.",
+        )
+
     if image.content_type not in ("image/jpeg", "image/png", "image/webp"):
         raise HTTPException(
             status_code=400,
@@ -60,10 +79,13 @@ async def create_post(
         raise HTTPException(status_code=500, detail=f"Fotoğraf yüklenemedi: {e}")
 
     # 2. Instagram'da paylaş
+    instagram = InstagramService(
+        user_id=account["instagram_user_id"],
+        access_token=account["access_token"],
+    )
     try:
         result = await instagram.post_image(image_url=image_url, caption=caption)
     except Exception as e:
-        # Yüklenen dosyayı temizle
         try:
             storage.delete(public_id)
         except Exception:
