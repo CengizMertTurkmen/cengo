@@ -2,7 +2,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 
-DB_PATH = "cengo.db"
+DB_PATH = "/app/data/cengo.db"
 
 
 def init_db():
