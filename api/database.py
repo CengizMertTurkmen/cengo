@@ -1,8 +1,11 @@
+import secrets
 import sqlite3
 import time
 from contextlib import contextmanager
 
 DB_PATH = "/app/data/cengo.db"
+
+AUTH_TOKEN_TTL = 24 * 60 * 60  # 24 saat
 
 
 def init_db():
@@ -13,6 +16,14 @@ def init_db():
                 instagram_user_id TEXT NOT NULL,
                 access_token TEXT NOT NULL,
                 expires_at INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS auth_tokens (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0
             )
         """)
 
@@ -57,3 +68,36 @@ def is_token_expired(account: dict) -> bool:
     if account.get("expires_at") is None:
         return False
     return time.time() > account["expires_at"] - 86400  # 1 gün kala uyar
+
+
+def create_auth_token(user_id: str) -> str:
+    """Tek kullanımlık auth token üret ve DB'ye kaydet."""
+    token = secrets.token_urlsafe(32)
+    expires_at = int(time.time()) + AUTH_TOKEN_TTL
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO auth_tokens (token, user_id, expires_at, used) VALUES (?, ?, ?, 0)",
+            (token, user_id, expires_at),
+        )
+    return token
+
+
+def consume_auth_token(token: str) -> str | None:
+    """
+    Token'ı doğrula ve kullanıldı olarak işaretle.
+    Geçerliyse user_id döner, geçersiz/süresi dolmuş/kullanılmışsa None döner.
+    """
+    now = int(time.time())
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id, expires_at, used FROM auth_tokens WHERE token = ?",
+            (token,),
+        ).fetchone()
+
+        if row is None:
+            return None
+        if row["used"] or row["expires_at"] < now:
+            return None
+
+        conn.execute("UPDATE auth_tokens SET used = 1 WHERE token = ?", (token,))
+        return row["user_id"]

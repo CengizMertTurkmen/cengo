@@ -5,7 +5,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
 
-from database import save_account, list_accounts, is_token_expired, get_account
+from database import save_account, list_accounts, is_token_expired, get_account, create_auth_token, consume_auth_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -15,12 +15,26 @@ IG_LONGTOKEN_URL = "https://graph.instagram.com/access_token"
 SCOPES = "instagram_business_basic,instagram_business_content_publish"
 
 
+@router.post("/link")
+def create_auth_link(user_id: str):
+    """
+    Müşteri bu endpoint'i çağırır ve tek kullanımlık bir auth linki alır.
+    O linki kendi kullanıcısına gönderir.
+      POST /auth/link?user_id=MUSTERI_ID
+    """
+    base_url = os.environ["BASE_URL"].rstrip("/")
+    token = create_auth_token(user_id)
+    return {
+        "url": f"{base_url}/auth/instagram?token={token}",
+        "expires_in_hours": 24,
+    }
+
+
 @router.get("/instagram")
-def instagram_login(user_id: str):
+def instagram_login(token: str):
     """
     Kullanıcıyı Instagram OAuth sayfasına yönlendir.
-    Müşteri bu linki kendi müşterilerine gönderir:
-      GET /auth/instagram?user_id=MUSTERI_ID
+    URL'deki token tek kullanımlıktır; ikinci kez kullanılamaz.
     """
     app_id = os.environ["META_APP_ID"]
     base_url = os.environ["BASE_URL"].rstrip("/")
@@ -32,7 +46,7 @@ def instagram_login(user_id: str):
         f"&redirect_uri={redirect_uri}"
         f"&scope={SCOPES}"
         f"&response_type=code"
-        f"&state={user_id}"
+        f"&state={token}"
     )
     return RedirectResponse(url)
 
@@ -49,7 +63,9 @@ async def instagram_callback(code: str = None, state: str = None, error: str = N
     if not code or not state:
         raise HTTPException(status_code=400, detail="Geçersiz callback parametreleri.")
 
-    user_id = state
+    user_id = consume_auth_token(state)
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Geçersiz veya süresi dolmuş link. Yeni bir link talep edin.")
     app_id = os.environ["META_APP_ID"]
     app_secret = os.environ["META_APP_SECRET"]
     base_url = os.environ["BASE_URL"].rstrip("/")
