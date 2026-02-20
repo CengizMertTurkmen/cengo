@@ -7,7 +7,7 @@ from fastapi.responses import RedirectResponse
 
 from database import save_account, list_accounts, is_token_expired, get_account, create_auth_token, consume_auth_token
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/auth", tags=["Hesap Bağlama"])
 
 IG_OAUTH_URL = "https://www.instagram.com/oauth/authorize"
 IG_TOKEN_URL = "https://api.instagram.com/oauth/access_token"
@@ -15,7 +15,7 @@ IG_LONGTOKEN_URL = "https://graph.instagram.com/access_token"
 SCOPES = "instagram_business_basic,instagram_business_content_publish"
 
 
-@router.post("/link")
+@router.post("/link", summary="Hesap bağlama linki üret")
 def create_auth_link(user_id: str):
     """
     Tek kullanımlık Instagram bağlama linki üretir.
@@ -37,7 +37,7 @@ def create_auth_link(user_id: str):
     }
 
 
-@router.get("/instagram")
+@router.get("/instagram", summary="Instagram OAuth yönlendirmesi (tarayıcıda açılır)", include_in_schema=True)
 def instagram_login(token: str):
     """
     Instagram OAuth sayfasına yönlendirir.
@@ -131,9 +131,9 @@ async def instagram_callback(code: str = None, state: str = None, error: str = N
     }
 
 
-@router.get("/accounts")
+@router.get("/accounts", summary="Bağlı tüm hesapları listele")
 def get_accounts():
-    """Kayıtlı tüm hesapları listele."""
+    """Sistemde kayıtlı tüm Instagram hesaplarını ve token durumlarını listeler."""
     accounts = list_accounts()
     now = int(time.time())
     return [
@@ -146,10 +146,14 @@ def get_accounts():
     ]
 
 
-@router.post("/refresh/{user_id}")
+@router.post("/refresh/{user_id}", summary="Token yenile (60 günde bir)")
 async def refresh_token(user_id: str):
     """
-    Hesabın token'ını yenile (60 günden önce çağırılmalı).
+    Hesabın Instagram token'ını yeniler.
+
+    - Token'lar **60 günde bir** sona erer
+    - Sona ermeden **en az 1 hafta önce** çağırmanız önerilir
+    - `GET /auth/accounts` ile token sürelerini takip edebilirsiniz
     """
     account = get_account(user_id)
     if not account:

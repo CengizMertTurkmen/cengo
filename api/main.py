@@ -14,7 +14,88 @@ from storage import CloudinaryStorage
 
 load_dotenv()
 
-app = FastAPI(title="CodEven Content API", version="2.0.0")
+description = """
+## CodEven Instagram İçerik API
+
+Birden fazla Instagram Business hesabına otomatik içerik paylaşımı sağlar.
+
+---
+
+### Nasıl Çalışır?
+
+#### 1. Hesap Bağlama (Bir Kez Yapılır)
+
+Kullanıcının Instagram hesabını sisteme bağlamak için:
+
+1. `POST /auth/link` → `user_id` gönder → tek kullanımlık link al
+2. Dönen `url`'yi kullanıcıya gönder
+3. Kullanıcı linke tıklar → Instagram ile giriş yapar → hesap otomatik bağlanır
+
+> ⚠️ `/auth/instagram` endpoint'i **Swagger'dan test edilemez**, tarayıcıda açılmalıdır.
+
+---
+
+#### 2. İçerik Paylaşma
+
+Hesap bağlandıktan sonra her post için:
+
+```
+POST /api/post
+X-Api-Key: {api_key}
+
+form-data:
+  user_id = kullanici_id
+  image   = resim.jpg
+  caption = "Paylaşım metni #hashtag"
+```
+
+---
+
+#### 3. Token Yönetimi
+
+Token'lar **60 günde bir** sona erer. Sona ermeden önce yenile:
+
+```
+POST /auth/refresh/{user_id}
+```
+
+Tüm hesapların token durumunu görmek için:
+```
+GET /auth/accounts
+```
+
+---
+
+### Kimlik Doğrulama
+
+`/api/post` endpoint'i için header'da API key gereklidir:
+```
+X-Api-Key: {api_key}
+```
+"""
+
+tags_metadata = [
+    {
+        "name": "Hesap Bağlama",
+        "description": "Instagram hesabı bağlama ve token yönetimi (OAuth akışı)",
+    },
+    {
+        "name": "İçerik Paylaşma",
+        "description": "Bağlı Instagram hesaplarına fotoğraf paylaşımı",
+    },
+    {
+        "name": "Sistem",
+        "description": "API durum kontrolü",
+    },
+]
+
+app = FastAPI(
+    title="CodEven Instagram İçerik API",
+    version="2.0.0",
+    description=description,
+    openapi_tags=tags_metadata,
+    contact={"name": "CodEven", "email": "admin@codeven.io"},
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,24 +129,36 @@ def require_api_key(key: str = Security(_api_key_header)):
         raise HTTPException(status_code=401, detail="Geçersiz veya eksik API key.")
 
 
-@app.get("/health")
+@app.get("/health", tags=["Sistem"])
 def health():
     return {"status": "ok"}
 
 
-@app.post("/api/post")
+@app.post(
+    "/api/post",
+    tags=["İçerik Paylaşma"],
+    status_code=201,
+    summary="Instagram'a fotoğraf paylaş",
+    response_description="Paylaşım başarılı, Instagram post ID döner",
+)
 async def create_post(
     _=Security(require_api_key),
-    user_id: str = Form(..., description="Müşteri ID (kayıt sırasında verilen)"),
-    image: UploadFile = File(..., description="Paylaşılacak fotoğraf"),
-    caption: str = Form(..., description="Fotoğraf altı yazı"),
+    user_id: str = Form(..., description="Kullanıcı ID — `/auth/link` ile hesap bağlarken kullanılan ID"),
+    image: UploadFile = File(..., description="Paylaşılacak fotoğraf (JPEG, PNG veya WebP)"),
+    caption: str = Form(..., description="Gönderi açıklaması (hashtag ve emoji dahil edilebilir)"),
 ):
     """
-    Belirtilen kullanıcının Instagram hesabına fotoğraf paylaşır.
+    Belirtilen kullanıcının Instagram Business hesabına fotoğraf paylaşır.
 
-    - **user_id**: Hesap bağlama sırasında kullanılan müşteri ID
-    - **image**: JPEG veya PNG fotoğraf dosyası
-    - **caption**: Gönderi açıklaması (hashtag'ler dahil)
+    **Gereksinimler:**
+    - Kullanıcının daha önce `/auth/link` → Instagram OAuth akışı ile hesabı bağlamış olması gerekir
+    - Header'da geçerli `X-Api-Key` bulunmalıdır
+
+    **Hata Durumları:**
+    - `401` → API key hatalı veya token süresi dolmuş (`/auth/refresh/{user_id}` ile yenile)
+    - `404` → Bu `user_id` için bağlı hesap bulunamadı
+    - `400` → Desteklenmeyen dosya formatı veya boş dosya
+    - `500` → Cloudinary yükleme veya Instagram API hatası
     """
     # Hesabı DB'den al
     account = get_account(user_id)
