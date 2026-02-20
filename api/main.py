@@ -2,8 +2,9 @@ import os
 import uuid
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Security, UploadFile
 from fastapi.responses import JSONResponse
+from fastapi.security.api_key import APIKeyHeader
 
 from auth import router as auth_router
 from database import init_db, get_account, is_token_expired
@@ -27,6 +28,17 @@ storage = CloudinaryStorage(
     api_secret=os.environ["CLOUDINARY_API_SECRET"],
 )
 
+# API Key doğrulama
+_api_key_header = APIKeyHeader(name="X-Api-Key", auto_error=False)
+
+
+def require_api_key(key: str = Security(_api_key_header)):
+    expected = os.environ.get("API_KEY", "")
+    if not expected:
+        raise HTTPException(status_code=500, detail="Sunucuda API_KEY tanımlı değil.")
+    if key != expected:
+        raise HTTPException(status_code=401, detail="Geçersiz veya eksik API key.")
+
 
 @app.get("/health")
 def health():
@@ -35,6 +47,7 @@ def health():
 
 @app.post("/api/post")
 async def create_post(
+    _=Security(require_api_key),
     user_id: str = Form(..., description="Müşteri ID (kayıt sırasında verilen)"),
     image: UploadFile = File(..., description="Paylaşılacak fotoğraf"),
     caption: str = Form(..., description="Fotoğraf altı yazı"),
