@@ -3,6 +3,7 @@ import uuid
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Security, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security.api_key import APIKeyHeader
 
@@ -13,7 +14,14 @@ from storage import CloudinaryStorage
 
 load_dotenv()
 
-app = FastAPI(title="Cengo Content API", version="2.0.0")
+app = FastAPI(title="CodEven Content API", version="2.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # DB başlat
 init_db()
@@ -85,7 +93,7 @@ async def create_post(
         raise HTTPException(status_code=400, detail="Dosya boş.")
 
     # 1. Cloudinary'e yükle → public URL al
-    public_id = f"cengo/{uuid.uuid4().hex}"
+    public_id = f"codeven/{uuid.uuid4().hex}"
     try:
         image_url = storage.upload(file_bytes, public_id)
     except Exception as e:

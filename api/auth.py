@@ -18,9 +18,16 @@ SCOPES = "instagram_business_basic,instagram_business_content_publish"
 @router.post("/link")
 def create_auth_link(user_id: str):
     """
-    Müşteri bu endpoint'i çağırır ve tek kullanımlık bir auth linki alır.
-    O linki kendi kullanıcısına gönderir.
-      POST /auth/link?user_id=MUSTERI_ID
+    Tek kullanımlık Instagram bağlama linki üretir.
+
+    - **user_id**: Kendi sistemindeki kullanıcı adı veya ID (örn: `mert`, `user_42`)
+
+    **Kullanım:**
+    1. Bu endpoint'i çağır → `url` al
+    2. O URL'yi **tarayıcıda aç** (Swagger'dan değil!) → Instagram login sayfası açılır
+    3. Kullanıcı izin verince hesap otomatik bağlanır
+
+    > Link 24 saat geçerlidir ve tek kullanımlıktır.
     """
     base_url = os.environ["BASE_URL"].rstrip("/")
     token = create_auth_token(user_id)
@@ -33,8 +40,13 @@ def create_auth_link(user_id: str):
 @router.get("/instagram")
 def instagram_login(token: str):
     """
-    Kullanıcıyı Instagram OAuth sayfasına yönlendir.
-    URL'deki token tek kullanımlıktır; ikinci kez kullanılamaz.
+    Instagram OAuth sayfasına yönlendirir.
+
+    > ⚠️ **Bu endpoint Swagger'dan test edilemez.** Tarayıcıdan açılmalıdır.
+    >
+    > Önce `POST /auth/link` ile link al, dönen `url`'yi tarayıcı adres çubuğuna yapıştır.
+
+    - **token**: `/auth/link` endpoint'inden alınan tek kullanımlık token
     """
     app_id = os.environ["META_APP_ID"]
     base_url = os.environ["BASE_URL"].rstrip("/")

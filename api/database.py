@@ -3,7 +3,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 
-DB_PATH = "/app/data/cengo.db"
+DB_PATH = "/app/data/codeven.db"
 
 AUTH_TOKEN_TTL = 24 * 60 * 60  # 24 saat
 
