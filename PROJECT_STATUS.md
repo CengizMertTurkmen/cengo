@@ -96,16 +96,29 @@ SMTP_HOST/PORT/USER/PASS/ALERT_EMAIL  # E-posta bildirimi
 
 ---
 
-## Server'da Yapılması Gerekenler
+## Server Kurulumu (Tamamlandı)
 
-> **Evet, son commit'ten sonra container rebuild gerekiyor.**
+- `codeven-api` container'ı: `~/cengo/api/` altında, `docker compose up -d` ile çalışır
+- Nginx: `kodera-nginx` Docker container'ı (`/opt/kodera-api/`) — 80/443 portlarını yönetir
+- Nginx config: `/opt/kodera-api/nginx.conf` → `api.codeven.io` → `172.17.0.1:8000`
+- SSL: `/etc/letsencrypt/live/api.codeven.io/` (mevcut sertifika)
+- Swagger: `https://api.codeven.io/docs` ✅
 
+### Güncelleme Prosedürü
 ```bash
-docker compose down
-docker compose up --build -d
+cd ~/cengo
+git pull origin claude/create-content-api-3uDwo
+cd api
+docker compose down && docker compose up --build -d
 ```
 
-Swagger adresi (development): `http://sunucu:port/docs`
+### Nginx Config Değişikliği Gerekirse
+```bash
+# /opt/kodera-api/nginx.conf dosyasını düzenle
+# Sonra container'ı yeniden oluştur (reload yetmez — inode sorunu):
+cd /opt/kodera-api
+docker compose stop nginx && docker compose rm -f nginx && docker compose up -d nginx
+```
 
 ---
 
