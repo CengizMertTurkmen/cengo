@@ -1,8 +1,10 @@
 import asyncio
 import os
+import smtplib
 import time
 import uuid
 from contextlib import asynccontextmanager
+from email.mime.text import MIMEText
 
 from dotenv import load_dotenv
 import httpx
@@ -121,26 +123,77 @@ tags_metadata = [
 _WARN_DAYS = int(os.environ.get("WEBHOOK_DAYS_BEFORE", "7"))
 
 
-async def _notify_expiring_tokens():
-    webhook_url = os.environ.get("WEBHOOK_URL", "")
-    if not webhook_url:
+async def _send_expiry_email(accounts: list, now: int):
+    smtp_host = os.environ.get("SMTP_HOST", "")
+    smtp_user = os.environ.get("SMTP_USER", "")
+    smtp_pass = os.environ.get("SMTP_PASS", "")
+    alert_email = os.environ.get("ALERT_EMAIL", "")
+
+    if not all([smtp_host, smtp_user, smtp_pass, alert_email]):
         return
+
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+
+    lines = []
+    for acc in accounts:
+        days_left = max(0, (acc["expires_at"] - now) // 86400)
+        if acc["expires_at"] < now:
+            status = "SÜRESI DOLMUŞ"
+        else:
+            status = f"{days_left} gün kaldı"
+        lines.append(f"  • {acc['user_id']} (IG: {acc['instagram_user_id']}) — {status}")
+
+    body = (
+        f"Merhaba,\n\n"
+        f"Aşağıdaki {len(accounts)} Instagram hesabının token'ı "
+        f"{_WARN_DAYS} gün içinde sona erecek veya sona ermiş:\n\n"
+        + "\n".join(lines)
+        + f"\n\nToken yenilemek için:\n  POST /auth/refresh/{{user_id}}\n\n"
+        "— CodEven Instagram API"
+    )
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = f"[CodEven] {len(accounts)} hesabın Instagram token'ı sona eriyor"
+    msg["From"] = smtp_user
+    msg["To"] = alert_email
+
+    def _send():
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+
+    await asyncio.to_thread(_send)
+
+
+async def _notify_expiring_tokens():
     accounts = get_expiring_accounts(_WARN_DAYS)
     if not accounts:
         return
     now = int(time.time())
-    async with httpx.AsyncClient(timeout=10) as client:
-        for acc in accounts:
-            days_left = max(0, (acc["expires_at"] - now) // 86400)
-            try:
-                await client.post(webhook_url, json={
-                    "event": "token_expiring",
-                    "user_id": acc["user_id"],
-                    "instagram_user_id": acc["instagram_user_id"],
-                    "expires_in_days": days_left,
-                })
-            except Exception:
-                pass
+
+    # Webhook bildirimi
+    webhook_url = os.environ.get("WEBHOOK_URL", "")
+    if webhook_url:
+        async with httpx.AsyncClient(timeout=10) as client:
+            for acc in accounts:
+                days_left = max(0, (acc["expires_at"] - now) // 86400)
+                try:
+                    await client.post(webhook_url, json={
+                        "event": "token_expiring",
+                        "user_id": acc["user_id"],
+                        "instagram_user_id": acc["instagram_user_id"],
+                        "expires_in_days": days_left,
+                    })
+                except Exception:
+                    pass
+
+    # E-posta bildirimi
+    try:
+        await _send_expiry_email(accounts, now)
+    except Exception:
+        pass
 
 
 async def _token_check_loop():
