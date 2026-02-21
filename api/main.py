@@ -253,7 +253,11 @@ storage = CloudinaryStorage(
     api_secret=os.environ["CLOUDINARY_API_SECRET"],
 )
 
-MAX_FILE_SIZE = 8 * 1024 * 1024  # 8 MB — Instagram limiti
+MAX_FILE_SIZE = 8 * 1024 * 1024    # 8 MB  — fotoğraf limiti
+MAX_VIDEO_SIZE = 100 * 1024 * 1024  # 100 MB — video limiti
+
+_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+_VIDEO_TYPES = {"video/mp4", "video/quicktime", "video/mov"}
 
 
 @app.get("/health", tags=["Sistem"])
@@ -375,4 +379,230 @@ async def create_post(
             "instagram_post_id": result.get("id"),
             "image_url": image_url,
         },
+    )
+
+
+# ── /api/reel ──────────────────────────────────────────────────────────────────
+
+@app.post(
+    "/api/reel",
+    tags=["İçerik Paylaşma"],
+    status_code=201,
+    summary="Instagram'a Reel (video) paylaş",
+    response_description="Paylaşım başarılı, Instagram post ID döner",
+)
+@limiter.limit("5/minute")
+async def create_reel(
+    request: Request,
+    _=Security(require_api_key),
+    user_id: str = Form(..., description="Kullanıcı ID"),
+    video: UploadFile = File(..., description="Video dosyası (MP4 veya MOV, maks. 100 MB)"),
+    caption: str = Form(..., description="Gönderi açıklaması"),
+):
+    """
+    Belirtilen kullanıcının Instagram Business hesabına Reels videosu paylaşır.
+
+    **Hata Durumları:**
+    - `401` → API key hatalı veya token süresi dolmuş
+    - `404` → Hesap bulunamadı
+    - `400` → Desteklenmeyen format veya boyut aşımı
+    - `429` → Çok fazla istek (maks. 5/dakika)
+    - `500` → Cloudinary yükleme veya Instagram API hatası
+    """
+    account = get_account(user_id)
+    if not account:
+        raise HTTPException(status_code=404, detail=f"'{user_id}' ID'li hesap bulunamadı.")
+    if is_token_expired(account):
+        raise HTTPException(status_code=401, detail=f"Token süresi dolmuş. /auth/refresh/{user_id}")
+
+    if video.content_type not in _VIDEO_TYPES:
+        raise HTTPException(status_code=400, detail="Sadece MP4 veya MOV dosyaları kabul edilir.")
+
+    file_bytes = await video.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Dosya boş.")
+    if len(file_bytes) > MAX_VIDEO_SIZE:
+        raise HTTPException(status_code=400, detail=f"Video çok büyük. Maksimum {MAX_VIDEO_SIZE // (1024 * 1024)} MB.")
+
+    public_id = f"codeven/reels/{uuid.uuid4().hex}"
+    try:
+        video_url = storage.upload_video(file_bytes, public_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Video yüklenemedi: {e}")
+
+    instagram = InstagramService(
+        user_id=account["instagram_user_id"],
+        access_token=account["access_token"],
+    )
+    try:
+        result = await instagram.post_reel(video_url=video_url, caption=caption)
+    except Exception as e:
+        try:
+            storage.delete(public_id, resource_type="video")
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Reel paylaşımı başarısız: {e}")
+
+    return JSONResponse(
+        status_code=201,
+        content={"success": True, "instagram_post_id": result.get("id"), "video_url": video_url},
+    )
+
+
+# ── /api/carousel ─────────────────────────────────────────────────────────────
+
+@app.post(
+    "/api/carousel",
+    tags=["İçerik Paylaşma"],
+    status_code=201,
+    summary="Instagram'a Carousel (çoklu fotoğraf) paylaş",
+    response_description="Paylaşım başarılı, Instagram post ID döner",
+)
+@limiter.limit("5/minute")
+async def create_carousel(
+    request: Request,
+    _=Security(require_api_key),
+    user_id: str = Form(..., description="Kullanıcı ID"),
+    images: list[UploadFile] = File(..., description="2–10 fotoğraf (JPEG, PNG veya WebP, her biri maks. 8 MB)"),
+    caption: str = Form(..., description="Gönderi açıklaması"),
+):
+    """
+    2 ile 10 fotoğrafı tek bir carousel gönderisi olarak paylaşır.
+
+    **Hata Durumları:**
+    - `400` → 2'den az veya 10'dan fazla fotoğraf, desteklenmeyen format, boyut aşımı
+    - `401` → Token süresi dolmuş
+    - `404` → Hesap bulunamadı
+    - `429` → Çok fazla istek (maks. 5/dakika)
+    - `500` → Cloudinary veya Instagram API hatası
+    """
+    account = get_account(user_id)
+    if not account:
+        raise HTTPException(status_code=404, detail=f"'{user_id}' ID'li hesap bulunamadı.")
+    if is_token_expired(account):
+        raise HTTPException(status_code=401, detail=f"Token süresi dolmuş. /auth/refresh/{user_id}")
+
+    if not (2 <= len(images) <= 10):
+        raise HTTPException(status_code=400, detail="Carousel için 2–10 arası fotoğraf gönderilmelidir.")
+
+    # Dosyaları oku ve doğrula
+    files: list[tuple[bytes, str]] = []
+    for img in images:
+        if img.content_type not in _IMAGE_TYPES:
+            raise HTTPException(status_code=400, detail=f"'{img.filename}': Sadece JPEG, PNG veya WebP kabul edilir.")
+        data = await img.read()
+        if not data:
+            raise HTTPException(status_code=400, detail=f"'{img.filename}': Dosya boş.")
+        if len(data) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail=f"'{img.filename}': Maksimum {MAX_FILE_SIZE // (1024*1024)} MB.")
+        files.append((data, img.filename))
+
+    # Cloudinary'e yükle
+    uploaded: list[tuple[str, str]] = []  # [(public_id, url), ...]
+    try:
+        for data, _ in files:
+            public_id = f"codeven/carousel/{uuid.uuid4().hex}"
+            url = storage.upload(data, public_id)
+            uploaded.append((public_id, url))
+    except Exception as e:
+        for pid, _ in uploaded:
+            try:
+                storage.delete(pid)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"Fotoğraf yüklenemedi: {e}")
+
+    image_urls = [url for _, url in uploaded]
+    instagram = InstagramService(
+        user_id=account["instagram_user_id"],
+        access_token=account["access_token"],
+    )
+    try:
+        result = await instagram.post_carousel(image_urls=image_urls, caption=caption)
+    except Exception as e:
+        for pid, _ in uploaded:
+            try:
+                storage.delete(pid)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"Carousel paylaşımı başarısız: {e}")
+
+    return JSONResponse(
+        status_code=201,
+        content={"success": True, "instagram_post_id": result.get("id"), "image_urls": image_urls},
+    )
+
+
+# ── /api/story ────────────────────────────────────────────────────────────────
+
+@app.post(
+    "/api/story",
+    tags=["İçerik Paylaşma"],
+    status_code=201,
+    summary="Instagram'a Story paylaş",
+    response_description="Paylaşım başarılı, Instagram story ID döner",
+)
+@limiter.limit("10/minute")
+async def create_story(
+    request: Request,
+    _=Security(require_api_key),
+    user_id: str = Form(..., description="Kullanıcı ID"),
+    media: UploadFile = File(..., description="Fotoğraf (JPEG/PNG/WebP, maks. 8 MB) veya video (MP4/MOV, maks. 100 MB)"),
+):
+    """
+    Belirtilen kullanıcının Instagram Business hesabına story paylaşır.
+    Fotoğraf ve video desteklenir; story'lerde caption alanı yoktur.
+
+    **Hata Durumları:**
+    - `400` → Desteklenmeyen format veya boyut aşımı
+    - `401` → Token süresi dolmuş
+    - `404` → Hesap bulunamadı
+    - `429` → Çok fazla istek (maks. 10/dakika)
+    - `500` → Cloudinary veya Instagram API hatası
+    """
+    account = get_account(user_id)
+    if not account:
+        raise HTTPException(status_code=404, detail=f"'{user_id}' ID'li hesap bulunamadı.")
+    if is_token_expired(account):
+        raise HTTPException(status_code=401, detail=f"Token süresi dolmuş. /auth/refresh/{user_id}")
+
+    is_video = media.content_type in _VIDEO_TYPES
+    is_image = media.content_type in _IMAGE_TYPES
+    if not is_video and not is_image:
+        raise HTTPException(status_code=400, detail="Desteklenmeyen format. JPEG, PNG, WebP, MP4 veya MOV gönderin.")
+
+    file_bytes = await media.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Dosya boş.")
+
+    size_limit = MAX_VIDEO_SIZE if is_video else MAX_FILE_SIZE
+    if len(file_bytes) > size_limit:
+        raise HTTPException(status_code=400, detail=f"Dosya çok büyük. Maksimum {size_limit // (1024*1024)} MB.")
+
+    public_id = f"codeven/stories/{uuid.uuid4().hex}"
+    resource_type = "video" if is_video else "image"
+    try:
+        if is_video:
+            media_url = storage.upload_video(file_bytes, public_id)
+        else:
+            media_url = storage.upload(file_bytes, public_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Medya yüklenemedi: {e}")
+
+    instagram = InstagramService(
+        user_id=account["instagram_user_id"],
+        access_token=account["access_token"],
+    )
+    try:
+        result = await instagram.post_story(media_url=media_url, is_video=is_video)
+    except Exception as e:
+        try:
+            storage.delete(public_id, resource_type=resource_type)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Story paylaşımı başarısız: {e}")
+
+    return JSONResponse(
+        status_code=201,
+        content={"success": True, "instagram_story_id": result.get("id"), "media_url": media_url},
     )

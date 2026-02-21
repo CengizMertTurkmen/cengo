@@ -11,10 +11,7 @@ class CloudinaryStorage:
         )
 
     def upload(self, file_bytes: bytes, filename: str) -> str:
-        """
-        Dosyayı Cloudinary'e yükler, public URL döner.
-        Instagram bu URL'yi kullanarak fotoğrafı çeker.
-        """
+        """Fotoğrafı Cloudinary'e yükler, public URL döner."""
         result = cloudinary.uploader.upload(
             file_bytes,
             public_id=filename,
@@ -23,5 +20,15 @@ class CloudinaryStorage:
         )
         return result["secure_url"]
 
-    def delete(self, public_id: str) -> None:
-        cloudinary.uploader.destroy(public_id)
+    def upload_video(self, file_bytes: bytes, filename: str) -> str:
+        """Videoyu Cloudinary'e yükler, public URL döner."""
+        result = cloudinary.uploader.upload(
+            file_bytes,
+            public_id=filename,
+            overwrite=True,
+            resource_type="video",
+        )
+        return result["secure_url"]
+
+    def delete(self, public_id: str, resource_type: str = "image") -> None:
+        cloudinary.uploader.destroy(public_id, resource_type=resource_type)
