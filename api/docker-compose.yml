@@ -1,0 +1,13 @@
+services:
+  fastapi:
+    build: .
+    container_name: codeven-api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - codeven_data:/app/data
+
+volumes:
+  codeven_data:
