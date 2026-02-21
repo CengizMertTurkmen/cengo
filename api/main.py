@@ -65,15 +65,21 @@ Kullanıcının Instagram hesabını sisteme bağlamak için:
 
 #### 2. İçerik Paylaşma
 
-Hesap bağlandıktan sonra her post için:
+| Endpoint | Açıklama | Format |
+|---|---|---|
+| `POST /api/post` | Tekli fotoğraf | JPEG/PNG/WebP, maks. 8 MB |
+| `POST /api/reel` | Reels videosu | MP4/MOV, maks. 100 MB |
+| `POST /api/carousel` | 2–10 fotoğraf | JPEG/PNG/WebP |
+| `POST /api/story` | Fotoğraf veya video story | JPEG/PNG/WebP/MP4/MOV |
 
+Tüm isteklerde `form-data` kullanılır:
 ```
 POST /api/post
 X-Api-Key: {api_key}
 
 form-data:
   user_id = kullanici_id
-  image   = resim.jpg
+  image   = resim.jpg      ← reel için "video", story için "media"
   caption = "Paylaşım metni #hashtag"
 ```
 
@@ -111,7 +117,7 @@ tags_metadata = [
     },
     {
         "name": "İçerik Paylaşma",
-        "description": "Bağlı Instagram hesaplarına fotoğraf paylaşımı",
+        "description": "Bağlı Instagram hesaplarına fotoğraf, reel, carousel ve story paylaşımı",
     },
     {
         "name": "Sistem",
