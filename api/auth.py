@@ -3,9 +3,9 @@ import time
 
 import httpx
 from fastapi import APIRouter, HTTPException, Security
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
-from database import save_account, list_accounts, is_token_expired, get_account, create_auth_token, consume_auth_token
+from database import save_account, list_accounts, is_token_expired, get_account, delete_account, create_auth_token, consume_auth_token
 from security import require_api_key
 
 router = APIRouter(prefix="/auth", tags=["Hesap Bağlama"])
@@ -123,13 +123,60 @@ async def instagram_callback(code: str = None, state: str = None, error: str = N
     expires_at = int(time.time()) + expires_in
     save_account(user_id, instagram_user_id, long_token, expires_at)
 
-    return {
-        "success": True,
-        "message": "Instagram hesabı başarıyla bağlandı.",
-        "user_id": user_id,
-        "instagram_user_id": instagram_user_id,
-        "token_expires_days": expires_in // 86400,
-    }
+    expires_days = expires_in // 86400
+    html = f"""<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hesap Bağlandı</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }}
+    .card {{
+      background: #fff;
+      border-radius: 16px;
+      padding: 48px 40px;
+      max-width: 420px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    }}
+    .icon {{ font-size: 56px; margin-bottom: 20px; }}
+    h1 {{ font-size: 22px; color: #1a1a1a; margin-bottom: 10px; }}
+    p {{ color: #666; font-size: 15px; line-height: 1.6; }}
+    .badge {{
+      display: inline-block;
+      margin-top: 24px;
+      background: #f0fdf4;
+      color: #16a34a;
+      border: 1px solid #bbf7d0;
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 500;
+    }}
+    .meta {{ margin-top: 32px; font-size: 12px; color: #aaa; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✅</div>
+    <h1>Instagram Hesabı Bağlandı</h1>
+    <p>Hesabın başarıyla sisteme bağlandı.<br>Bu sekmeyi kapatabilirsin.</p>
+    <div class="badge">Token {expires_days} gün geçerli</div>
+    <div class="meta">user_id: {user_id} &nbsp;·&nbsp; ig: {instagram_user_id}</div>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
 
 @router.get("/accounts", summary="Bağlı tüm hesapları listele")
@@ -145,6 +192,31 @@ def get_accounts(_=Security(require_api_key)):
         }
         for acc in accounts
     ]
+
+
+@router.get("/accounts/{user_id}", summary="Tek hesabı sorgula")
+def get_account_detail(user_id: str, _=Security(require_api_key)):
+    """Belirtilen `user_id`'ye ait hesabın bilgilerini ve token durumunu döner."""
+    account = get_account(user_id)
+    if not account:
+        raise HTTPException(status_code=404, detail=f"'{user_id}' bulunamadı.")
+    now = int(time.time())
+    expires_at = account.get("expires_at")
+    return {
+        "user_id": account["user_id"],
+        "instagram_user_id": account["instagram_user_id"],
+        "token_expires_in_days": max(0, (expires_at - now) // 86400) if expires_at else None,
+        "token_warning": is_token_expired(account),
+    }
+
+
+@router.delete("/accounts/{user_id}", summary="Hesabı sil", status_code=200)
+def remove_account(user_id: str, _=Security(require_api_key)):
+    """Belirtilen `user_id`'ye ait hesabı sistemden kalıcı olarak siler."""
+    deleted = delete_account(user_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"'{user_id}' bulunamadı.")
+    return {"success": True, "message": f"'{user_id}' hesabı silindi."}
 
 
 @router.post("/refresh/{user_id}", summary="Token yenile (60 günde bir)")

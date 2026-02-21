@@ -70,6 +70,13 @@ def is_token_expired(account: dict) -> bool:
     return time.time() > account["expires_at"] - 86400  # 1 gün kala uyar
 
 
+def delete_account(user_id: str) -> bool:
+    """Hesabı siler. Bulunup silinirse True, bulunamazsa False döner."""
+    with get_conn() as conn:
+        cursor = conn.execute("DELETE FROM accounts WHERE user_id = ?", (user_id,))
+        return cursor.rowcount > 0
+
+
 def create_auth_token(user_id: str) -> str:
     """Tek kullanımlık auth token üret ve DB'ye kaydet."""
     token = secrets.token_urlsafe(32)
