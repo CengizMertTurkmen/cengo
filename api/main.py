@@ -1,7 +1,11 @@
+import asyncio
 import os
+import time
 import uuid
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, Security, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -10,7 +14,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from auth import router as auth_router
-from database import init_db, get_account, is_token_expired
+from database import init_db, get_account, is_token_expired, get_expiring_accounts
 from instagram import InstagramService
 from security import require_api_key
 from storage import CloudinaryStorage
@@ -113,6 +117,52 @@ tags_metadata = [
     },
 ]
 
+# ── Token izleme arkaplan görevi ──────────────────────────────────────────────
+_WARN_DAYS = int(os.environ.get("WEBHOOK_DAYS_BEFORE", "7"))
+
+
+async def _notify_expiring_tokens():
+    webhook_url = os.environ.get("WEBHOOK_URL", "")
+    if not webhook_url:
+        return
+    accounts = get_expiring_accounts(_WARN_DAYS)
+    if not accounts:
+        return
+    now = int(time.time())
+    async with httpx.AsyncClient(timeout=10) as client:
+        for acc in accounts:
+            days_left = max(0, (acc["expires_at"] - now) // 86400)
+            try:
+                await client.post(webhook_url, json={
+                    "event": "token_expiring",
+                    "user_id": acc["user_id"],
+                    "instagram_user_id": acc["instagram_user_id"],
+                    "expires_in_days": days_left,
+                })
+            except Exception:
+                pass
+
+
+async def _token_check_loop():
+    while True:
+        try:
+            await _notify_expiring_tokens()
+        except Exception:
+            pass
+        await asyncio.sleep(24 * 3600)  # 24 saatte bir kontrol
+
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(_token_check_loop())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 # ── Rate limiter ──────────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address)
 
@@ -124,6 +174,7 @@ app = FastAPI(
     contact={"name": "CodEven", "email": "admin@codeven.io"},
     docs_url=_docs_url,
     redoc_url=_redoc_url,
+    lifespan=lifespan,
 )
 
 app.state.limiter = limiter
@@ -155,6 +206,31 @@ MAX_FILE_SIZE = 8 * 1024 * 1024  # 8 MB — Instagram limiti
 @app.get("/health", tags=["Sistem"])
 def health():
     return {"status": "ok"}
+
+
+@app.get("/health/tokens", tags=["Sistem"], summary="Token durumu özeti")
+def token_health(_=Security(require_api_key)):
+    """
+    Token'ı sona ermiş veya yakında sona erecek hesapları listeler.
+
+    - Uyarı eşiği `WEBHOOK_DAYS_BEFORE` env var ile ayarlanır (varsayılan: 7 gün)
+    - Aynı eşik arkaplan webhook bildirimi için de kullanılır
+    """
+    now = int(time.time())
+    accounts = get_expiring_accounts(_WARN_DAYS)
+    return {
+        "warning_threshold_days": _WARN_DAYS,
+        "total_at_risk": len(accounts),
+        "accounts": [
+            {
+                "user_id": acc["user_id"],
+                "instagram_user_id": acc["instagram_user_id"],
+                "expires_in_days": max(0, (acc["expires_at"] - now) // 86400),
+                "expired": acc["expires_at"] < now,
+            }
+            for acc in accounts
+        ],
+    }
 
 
 @app.post(

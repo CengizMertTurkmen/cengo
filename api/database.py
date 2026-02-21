@@ -70,6 +70,18 @@ def is_token_expired(account: dict) -> bool:
     return time.time() > account["expires_at"] - 86400  # 1 gün kala uyar
 
 
+def get_expiring_accounts(within_days: int) -> list[dict]:
+    """expires_at değeri within_days gün içinde olan hesapları döner (süresi geçmişler dahil)."""
+    threshold = int(time.time()) + within_days * 86400
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT user_id, instagram_user_id, expires_at FROM accounts "
+            "WHERE expires_at IS NOT NULL AND expires_at <= ?",
+            (threshold,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def delete_account(user_id: str) -> bool:
     """Hesabı siler. Bulunup silinirse True, bulunamazsa False döner."""
     with get_conn() as conn:
