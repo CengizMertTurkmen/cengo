@@ -2,10 +2,11 @@ import os
 import time
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Security
 from fastapi.responses import RedirectResponse
 
 from database import save_account, list_accounts, is_token_expired, get_account, create_auth_token, consume_auth_token
+from security import require_api_key
 
 router = APIRouter(prefix="/auth", tags=["Hesap Bağlama"])
 
@@ -16,7 +17,7 @@ SCOPES = "instagram_business_basic,instagram_business_content_publish"
 
 
 @router.post("/link", summary="Hesap bağlama linki üret")
-def create_auth_link(user_id: str):
+def create_auth_link(user_id: str, _=Security(require_api_key)):
     """
     Tek kullanımlık Instagram bağlama linki üretir.
 
@@ -132,7 +133,7 @@ async def instagram_callback(code: str = None, state: str = None, error: str = N
 
 
 @router.get("/accounts", summary="Bağlı tüm hesapları listele")
-def get_accounts():
+def get_accounts(_=Security(require_api_key)):
     """Sistemde kayıtlı tüm Instagram hesaplarını ve token durumlarını listeler."""
     accounts = list_accounts()
     now = int(time.time())
@@ -147,7 +148,7 @@ def get_accounts():
 
 
 @router.post("/refresh/{user_id}", summary="Token yenile (60 günde bir)")
-async def refresh_token(user_id: str):
+async def refresh_token(user_id: str, _=Security(require_api_key)):
     """
     Hesabın Instagram token'ını yeniler.
 

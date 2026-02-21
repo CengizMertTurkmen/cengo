@@ -2,17 +2,39 @@ import os
 import uuid
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Security, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Security, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.security.api_key import APIKeyHeader
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from auth import router as auth_router
 from database import init_db, get_account, is_token_expired
 from instagram import InstagramService
+from security import require_api_key
 from storage import CloudinaryStorage
 
 load_dotenv()
+
+# ── Startup: zorunlu env var'ları kontrol et ─────────────────────────────────
+_REQUIRED_ENV_VARS = [
+    "API_KEY",
+    "CLOUDINARY_CLOUD_NAME",
+    "CLOUDINARY_API_KEY",
+    "CLOUDINARY_API_SECRET",
+    "META_APP_ID",
+    "META_APP_SECRET",
+    "BASE_URL",
+]
+_missing = [v for v in _REQUIRED_ENV_VARS if not os.environ.get(v)]
+if _missing:
+    raise RuntimeError(f"Eksik ortam değişkenleri, uygulama başlatılamıyor: {', '.join(_missing)}")
+
+# ── Swagger: production'da gizle ─────────────────────────────────────────────
+_env = os.environ.get("ENV", "development")
+_docs_url = None if _env == "production" else "/docs"
+_redoc_url = None if _env == "production" else "/redoc"
 
 description = """
 ## CodEven Instagram İçerik API
@@ -57,18 +79,20 @@ Token'lar **60 günde bir** sona erer. Sona ermeden önce yenile:
 
 ```
 POST /auth/refresh/{user_id}
+X-Api-Key: {api_key}
 ```
 
 Tüm hesapların token durumunu görmek için:
 ```
 GET /auth/accounts
+X-Api-Key: {api_key}
 ```
 
 ---
 
 ### Kimlik Doğrulama
 
-`/api/post` endpoint'i için header'da API key gereklidir:
+**Tüm** endpoint'ler için header'da API key gereklidir:
 ```
 X-Api-Key: {api_key}
 ```
@@ -89,13 +113,21 @@ tags_metadata = [
     },
 ]
 
+# ── Rate limiter ──────────────────────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(
     title="CodEven Instagram İçerik API",
     version="2.0.0",
     description=description,
     openapi_tags=tags_metadata,
     contact={"name": "CodEven", "email": "admin@codeven.io"},
+    docs_url=_docs_url,
+    redoc_url=_redoc_url,
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -117,16 +149,7 @@ storage = CloudinaryStorage(
     api_secret=os.environ["CLOUDINARY_API_SECRET"],
 )
 
-# API Key doğrulama
-_api_key_header = APIKeyHeader(name="X-Api-Key", auto_error=False)
-
-
-def require_api_key(key: str = Security(_api_key_header)):
-    expected = os.environ.get("API_KEY", "")
-    if not expected:
-        raise HTTPException(status_code=500, detail="Sunucuda API_KEY tanımlı değil.")
-    if key != expected:
-        raise HTTPException(status_code=401, detail="Geçersiz veya eksik API key.")
+MAX_FILE_SIZE = 8 * 1024 * 1024  # 8 MB — Instagram limiti
 
 
 @app.get("/health", tags=["Sistem"])
@@ -141,10 +164,12 @@ def health():
     summary="Instagram'a fotoğraf paylaş",
     response_description="Paylaşım başarılı, Instagram post ID döner",
 )
+@limiter.limit("10/minute")
 async def create_post(
+    request: Request,
     _=Security(require_api_key),
     user_id: str = Form(..., description="Kullanıcı ID — `/auth/link` ile hesap bağlarken kullanılan ID"),
-    image: UploadFile = File(..., description="Paylaşılacak fotoğraf (JPEG, PNG veya WebP)"),
+    image: UploadFile = File(..., description="Paylaşılacak fotoğraf (JPEG, PNG veya WebP, maks. 8 MB)"),
     caption: str = Form(..., description="Gönderi açıklaması (hashtag ve emoji dahil edilebilir)"),
 ):
     """
@@ -157,7 +182,8 @@ async def create_post(
     **Hata Durumları:**
     - `401` → API key hatalı veya token süresi dolmuş (`/auth/refresh/{user_id}` ile yenile)
     - `404` → Bu `user_id` için bağlı hesap bulunamadı
-    - `400` → Desteklenmeyen dosya formatı veya boş dosya
+    - `400` → Desteklenmeyen dosya formatı, boş veya çok büyük dosya
+    - `429` → Çok fazla istek (maks. 10/dakika)
     - `500` → Cloudinary yükleme veya Instagram API hatası
     """
     # Hesabı DB'den al
@@ -165,7 +191,7 @@ async def create_post(
     if not account:
         raise HTTPException(
             status_code=404,
-            detail=f"'{user_id}' ID'li hesap bulunamadı. Önce /auth/instagram?user_id={user_id} ile hesabı bağlayın.",
+            detail=f"'{user_id}' ID'li hesap bulunamadı. Önce /auth/link ile hesabı bağlayın.",
         )
 
     # Token yakında sona erecek mi?
@@ -182,8 +208,15 @@ async def create_post(
         )
 
     file_bytes = await image.read()
+
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Dosya boş.")
+
+    if len(file_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Dosya boyutu çok büyük. Maksimum {MAX_FILE_SIZE // (1024 * 1024)} MB yüklenebilir.",
+        )
 
     # 1. Cloudinary'e yükle → public URL al
     public_id = f"codeven/{uuid.uuid4().hex}"
