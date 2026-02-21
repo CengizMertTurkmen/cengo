@@ -8,6 +8,12 @@ services:
       - "8000:8000"
     volumes:
       - codeven_data:/app/data
+    networks:
+      - kodera-network
 
 volumes:
   codeven_data:
+
+networks:
+  kodera-network:
+    external: true
